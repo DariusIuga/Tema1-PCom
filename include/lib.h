@@ -8,7 +8,15 @@
 
 #define MAX_PACKET_LEN 1600
 #define ROUTER_NUM_INTERFACES 3
-
+#define ICMP_TIME_EXCEEDED 11
+#define ICMP_DESTINATION_UNREACHABLE 3
+#define ETHERTYPE_IP 0x0800
+#define ETHERTYPE_ARP 0x0806
+#define ETH_ARP_LEN 6 // 6 * sizeof(uint8_t)
+#define MAX_LINE_LENGTH 256
+#define MAX_IP_LENGTH 16
+#define ARPOP_REQUEST 0x0001
+#define ARPOP_REPLY 0x0002
 
 /*
  * @brief Sends a packet on a specific interface.
@@ -26,14 +34,15 @@ int send_to_link(int interface, char *frame_data, size_t length);
  * be received.
  *
  * @param frame_data - region of memory in which the data will be copied; should
- *        have at least MAX_PACKET_LEN bytes allocated 
+ *        have at least MAX_PACKET_LEN bytes allocated
  * @param length - will be set to the total number of bytes received.
  * Returns: the interface it has been received from.
  */
 int recv_from_any_link(char *frame_data, size_t *length);
 
 /* Route table entry */
-struct route_table_entry {
+struct route_table_entry
+{
 	uint32_t prefix;
 	uint32_t next_hop;
 	uint32_t mask;
@@ -41,9 +50,10 @@ struct route_table_entry {
 } __attribute__((packed));
 
 /* ARP table entry when skipping the ARP exercise */
-struct arp_table_entry {
-    uint32_t ip;
-    uint8_t mac[6];
+struct arp_table_entry
+{
+	uint32_t ip;
+	uint8_t mac[6];
 };
 
 char *get_interface_ip(int interface);
@@ -98,13 +108,15 @@ int parse_arp_table(char *path, struct arp_table_entry *arp_table);
 
 void init(int argc, char *argv[]);
 
-#define DIE(condition, message, ...) \
-	do { \
-		if ((condition)) { \
-			fprintf(stderr, "[(%s:%d)]: " # message "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-			perror(""); \
-			exit(1); \
-		} \
+#define DIE(condition, message, ...)                                                         \
+	do                                                                                       \
+	{                                                                                        \
+		if ((condition))                                                                     \
+		{                                                                                    \
+			fprintf(stderr, "[(%s:%d)]: " #message "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+			perror("");                                                                      \
+			exit(1);                                                                         \
+		}                                                                                    \
 	} while (0)
 
 #endif /* _SKEL_H_ */
