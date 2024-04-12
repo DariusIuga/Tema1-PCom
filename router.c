@@ -45,7 +45,7 @@ int route_cmp(const void *ptr1, const void *ptr2)
 }
 
 // Using a binary search for the sorted routing table in order to select the best route for the given IP address
-struct route_table_entry *get_best_route(const uint32_t ip)
+struct route_table_entry *find_best_route(const uint32_t ip)
 {
     int left = 0;
     int right = rtable_len - 1;
@@ -103,42 +103,42 @@ struct arp_table_entry *find_arp_entry(const uint32_t ip)
             return &arp_table[i];
         }
     }
-    // NO entry for the given IP was found
+    // No entry for the given IP was found
     return NULL;
 }
 
-// Functia folosita in cazul router_arp_reply, care proceseaza elementele din coada de
-// asteptare si apoi le trimite pe interfata corespunzatoare
+// A function used when we need to send an ARP reply
 void arp_reply(const struct arp_header *arp_hdr, struct queue *q)
 {
-    // adaugarea in tabela mac a expeditorului ARP
+    // Put the ARP sender in the ARP table
     arp_table[arp_table_len].ip = arp_hdr->spa;
     memcpy(arp_table[arp_table_len].mac, arp_hdr->sha, MAC_SIZE);
-    arp_table_len++; // reactualizarea dimensiunii tabelei
+    // Increment the table length
+    arp_table_len++;
 
-    // parcurgerea cozii de buffere
+    // Traverse the queue until empty
     while (queue_empty(q) == 0)
     {
-        // retinerea primului element din coada
+        // Fetch the first packet from the queue
         char *new_buf = queue_deq(q);
         struct ether_header *new_eth = (struct ether_header *)new_buf;
         struct iphdr *new_ip = (struct iphdr *)(new_buf + sizeof(struct ether_header));
 
-        struct route_table_entry *next_router = get_best_route(new_ip->daddr);
+        struct route_table_entry *next_router = find_best_route(new_ip->daddr);
 
-        // daca exista o ruta specifica
         if (next_router != NULL)
         {
             get_interface_mac(next_router->interface, new_eth->ether_shost);
             memcpy(new_eth->ether_dhost, arp_hdr->sha, MAC_SIZE);
             new_eth->ether_type = ntohs(ETHERTYPE_IP);
 
-            // reactualizarea lungimii
+            // Find the packet length
             size_t len = sizeof(struct ether_header) + ntohs(new_ip->tot_len);
             send_to_link(next_router->interface, new_buf, len);
         }
         else
-        { // daca nu exista o ruta specifica, se trece la urmatorul pachet
+        {
+            // If no route was found, check the next packet in the queue
             continue;
         }
     }
@@ -147,13 +147,13 @@ void arp_reply(const struct arp_header *arp_hdr, struct queue *q)
 // Functie necesara pentru cazul in care nu exista un nex_hop in tabela ARP
 void no_next_hop(char *buf, struct route_table_entry *best_route)
 {
-    // completare noii structuri ether_header
+    // Write the ethernet header
     struct ether_header *new_eth = malloc(sizeof(struct ether_header));
     get_interface_mac(best_route->interface, new_eth->ether_shost);
     memset(new_eth->ether_dhost, 0xff, MAC_SIZE);
     new_eth->ether_type = htons(ETHERTYPE_ARP);
 
-    // completarea noii structuri arp_header
+    // Write the ARP header
     struct arp_header *new_arp = malloc(sizeof(struct arp_header));
     memset(new_arp->tha, 0xff, MAC_SIZE);
     new_arp->htype = htons(ARPOP_REQUEST);
@@ -161,21 +161,20 @@ void no_next_hop(char *buf, struct route_table_entry *best_route)
     new_arp->hlen = 6;
     new_arp->plen = 4;
     new_arp->op = htons(ARPOP_REQUEST);
-
     new_arp->tpa = best_route->next_hop;
-    get_interface_mac(best_route->interface, new_arp->sha);
     new_arp->spa = inet_addr(get_interface_ip(best_route->interface));
+    get_interface_mac(best_route->interface, new_arp->sha);
 
-    // completarea buffer-ului
+    // Add the package to the buffer
     memcpy(buf, new_eth, sizeof(struct ether_header));
     memcpy(buf + sizeof(struct ether_header), new_arp, sizeof(struct arp_header));
-    // redefinirea lungimii
+    // Recalculate the package length
     size_t len = sizeof(struct ether_header) + sizeof(struct arp_header);
 
     send_to_link(best_route->interface, buf, len);
 }
 
-// Cazul Echo reply
+// Send an ICMP message for the normal case: Echo reply
 void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
                 struct iphdr *ip_hdr, size_t len)
 {
@@ -202,7 +201,7 @@ void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
     send_to_link(interface, buf, len);
 }
 
-// Cazul Time exceeded and case Destination unreachable
+// Send an ICMP message for one of 2 error cases: Time exceeded or Destination unreachable
 void icmp_error(uint8_t type, char *buf, int interface, struct ether_header *eth_hdr,
                 struct iphdr *ip_hdr, size_t len)
 {
@@ -288,7 +287,7 @@ int main(int argc, char *argv[])
             }
 
             // Find the best route for the destination IP of the packet
-            struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
+            struct route_table_entry *best_route = find_best_route(ip_hdr->daddr);
 
             // No route was found
             if (best_route == NULL)
