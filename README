@@ -20,7 +20,7 @@ Descrierea functiilor folosite in router.c:
 - void arp_reply(const struct arp_header *arp_hdr, struct queue*q):
     Folosesc coada de pachete ARP pentru a retine o adresa MAC primita printr-un pachet ARP.
 
-- void no_next_hop(char *buf, struct route_table_entry*best_route):
+- void mac_not_found(char *buf, struct route_table_entry*next_hop_ip):
     Nu am gasit adresa MAC a urmatorului hop, voi scrie campurile ethernet si arp in buf si trimit un pachet nou prin broadcast ca sa gasesc adresa MAC.
 
 - void icmp_error(uint8_t type, char *buf, int interface, struct ether_header*eth_hdr,
@@ -52,9 +52,9 @@ Descrierea functiilor folosite in router.c:
 
     Decrementez TTL si recalculez chechsum.
 
-    Apelez find_arp_entry pentru urmatoarea adresa IP. Daca nu gasesc o adresa MAC, adaug pachetul curent in coada, apelez no_next_hop si arunc pachetul.
+    Apelez find_arp_entry pentru urmatoarea adresa IP. Daca nu gasesc o adresa MAC, adaug pachetul curent in coada, apelez mac_not_found si arunc pachetul.
 
-    Daca nu s-a ajuns in niciunul din aceste cazuri, setez adresele MAC destinatie si sursa pentru packet si il trimit pe interfata aferenta lui best_route.
+    Daca nu s-a ajuns in niciunul din aceste cazuri, setez adresele MAC destinatie si sursa pentru packet si il trimit pe interfata aferenta lui next_hop_ip.
 
     2) Pachet ARP:
 

@@ -136,20 +136,15 @@ void arp_reply(const struct arp_header *arp_hdr, struct queue *q)
             size_t len = sizeof(struct ether_header) + ntohs(new_ip->tot_len);
             send_to_link(next_router->interface, new_buf, len);
         }
-        else
-        {
-            // If no route was found, check the next packet in the queue
-            continue;
-        }
     }
 }
 
-// Functie necesara pentru cazul in care nu exista un nex_hop in tabela ARP
-void no_next_hop(char *buf, struct route_table_entry *best_route)
+// Used when the MAC address of the next hop wasn't found in the ARP table
+void mac_not_found(char *buf, struct route_table_entry *next_hop_ip)
 {
     // Write the ethernet header
     struct ether_header *new_eth = malloc(sizeof(struct ether_header));
-    get_interface_mac(best_route->interface, new_eth->ether_shost);
+    get_interface_mac(next_hop_ip->interface, new_eth->ether_shost);
     memset(new_eth->ether_dhost, 0xff, MAC_SIZE);
     new_eth->ether_type = htons(ETHERTYPE_ARP);
 
@@ -161,9 +156,9 @@ void no_next_hop(char *buf, struct route_table_entry *best_route)
     new_arp->hlen = 6;
     new_arp->plen = 4;
     new_arp->op = htons(ARP_OP_REQUEST);
-    new_arp->tpa = best_route->next_hop;
-    new_arp->spa = inet_addr(get_interface_ip(best_route->interface));
-    get_interface_mac(best_route->interface, new_arp->sha);
+    new_arp->tpa = next_hop_ip->next_hop;
+    new_arp->spa = inet_addr(get_interface_ip(next_hop_ip->interface));
+    get_interface_mac(next_hop_ip->interface, new_arp->sha);
 
     // Add the package to the buffer
     memcpy(buf, new_eth, sizeof(struct ether_header));
@@ -171,7 +166,7 @@ void no_next_hop(char *buf, struct route_table_entry *best_route)
     // Recalculate the package length
     size_t len = sizeof(struct ether_header) + sizeof(struct arp_header);
 
-    send_to_link(best_route->interface, buf, len);
+    send_to_link(next_hop_ip->interface, buf, len);
 }
 
 // Send an ICMP message for one of 2 error cases: Time exceeded or Destination unreachable
@@ -221,7 +216,8 @@ void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
                 struct iphdr *ip_hdr, size_t len)
 {
     get_interface_mac(interface, eth_hdr->ether_shost);
-    // Invert the source and destination in order to reply back
+
+    // Swap the source and destination in order to reply back
     uint8_t aux[6];
     memcpy(aux, eth_hdr->ether_dhost, sizeof(eth_hdr->ether_dhost));
     memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
@@ -294,10 +290,10 @@ int main(int argc, char *argv[])
             }
 
             // Find the best route for the destination IP of the packet
-            struct route_table_entry *best_route = find_best_route(ip_hdr->daddr);
+            struct route_table_entry *next_hop_ip = find_best_route(ip_hdr->daddr);
 
             // No route was found
-            if (best_route == NULL)
+            if (next_hop_ip == NULL)
             {
                 // Destination unreachable case, we need to send an ICMP packet to the source host
                 icmp_error(3, buf, interface, eth_hdr, ip_hdr, len);
@@ -322,7 +318,7 @@ int main(int argc, char *argv[])
             // Recalculate the checksum
             ip_hdr->check = ~(~old_check + ~((uint16_t)old_ttl) + (uint16_t)ip_hdr->ttl) - 1;
 
-            struct arp_table_entry *next_hop_mac = find_arp_entry(best_route->next_hop);
+            struct arp_table_entry *next_hop_mac = find_arp_entry(next_hop_ip->next_hop);
             // There is no next hop in the ARP table
             if (next_hop_mac == NULL)
             {
@@ -331,15 +327,15 @@ int main(int argc, char *argv[])
                 memcpy(new_buf, buf, sizeof(buf));
                 queue_enq(q, new_buf);
 
-                no_next_hop(buf, best_route);
+                mac_not_found(buf, next_hop_ip);
                 continue;
             }
 
             // We send the IP packet
             memcpy(eth_hdr->ether_dhost, next_hop_mac->mac,
                    sizeof(eth_hdr->ether_dhost));
-            get_interface_mac(best_route->interface, eth_hdr->ether_shost);
-            send_to_link(best_route->interface, buf, len);
+            get_interface_mac(next_hop_ip->interface, eth_hdr->ether_shost);
+            send_to_link(next_hop_ip->interface, buf, len);
 
             break;
 
