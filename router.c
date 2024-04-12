@@ -1,5 +1,3 @@
-
-
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -12,15 +10,15 @@
 
 #define ETHERTYPE_IP 0x0800
 #define ETHERTYPE_ARP 0x0806
-#define ARPOP_REQUEST 0x0001
-#define ARPOP_REPLY 0x0002
+#define ARP_OP_REQUEST 0x0001
+#define ARP_OP_REPLY 0x0002
 #define MAC_SIZE 6
 
 /* Routing table */
 struct route_table_entry *rtable;
 int rtable_len;
 
-/* Mac table */
+/* ARP table */
 struct arp_table_entry *arp_table;
 int arp_table_len;
 
@@ -45,6 +43,7 @@ int route_cmp(const void *ptr1, const void *ptr2)
 }
 
 // Using a binary search for the sorted routing table in order to select the best route for the given IP address
+// This algorithm is faster than a linear search and has a time complexity of O(log(n))
 struct route_table_entry *find_best_route(const uint32_t ip)
 {
     int left = 0;
@@ -156,11 +155,11 @@ void no_next_hop(char *buf, struct route_table_entry *best_route)
     // Write the ARP header
     struct arp_header *new_arp = malloc(sizeof(struct arp_header));
     memset(new_arp->tha, 0xff, MAC_SIZE);
-    new_arp->htype = htons(ARPOP_REQUEST);
+    new_arp->htype = htons(ARP_OP_REQUEST);
     new_arp->ptype = htons(ETHERTYPE_IP);
     new_arp->hlen = 6;
     new_arp->plen = 4;
-    new_arp->op = htons(ARPOP_REQUEST);
+    new_arp->op = htons(ARP_OP_REQUEST);
     new_arp->tpa = best_route->next_hop;
     new_arp->spa = inet_addr(get_interface_ip(best_route->interface));
     get_interface_mac(best_route->interface, new_arp->sha);
@@ -174,58 +173,35 @@ void no_next_hop(char *buf, struct route_table_entry *best_route)
     send_to_link(best_route->interface, buf, len);
 }
 
-// Send an ICMP message for the normal case: Echo reply
-void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
-                struct iphdr *ip_hdr, size_t len)
-{
-    // reinitializarea interfetei
-    get_interface_mac(interface, eth_hdr->ether_shost);
-    // inversarea sursei si a destinatiei
-    uint8_t aux[6];
-    memcpy(aux, eth_hdr->ether_dhost, sizeof(eth_hdr->ether_dhost));
-    memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
-    memcpy(eth_hdr->ether_shost, aux, sizeof(eth_hdr->ether_shost));
-
-    // completarea header-ului ip
-    ip_hdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
-    ip_hdr->protocol = IPPROTO_ICMP;
-    ip_hdr->check = checksum((uint16_t *)(ip_hdr), sizeof(struct iphdr));
-
-    // completarea header-ului icmp
-    struct icmphdr *icmp_hdr = (struct icmphdr *)(buf +
-                                                  sizeof(struct ether_header) + sizeof(struct iphdr));
-    memset(icmp_hdr, 0, sizeof(struct icmphdr));
-    // recalcularea checksum-ului
-    icmp_hdr->checksum = checksum((uint16_t *)(icmp_hdr), sizeof(struct icmphdr));
-    // trimiterea pachetului
-    send_to_link(interface, buf, len);
-}
-
 // Send an ICMP message for one of 2 error cases: Time exceeded or Destination unreachable
 void icmp_error(uint8_t type, char *buf, int interface, struct ether_header *eth_hdr,
                 struct iphdr *ip_hdr, size_t len)
 {
-    // reinitializarea interfetei
     get_interface_mac(interface, eth_hdr->ether_shost);
 
-    // completarea header-ului ip
+    // Write the IP header
     ip_hdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
     ip_hdr->protocol = IPPROTO_ICMP;
     ip_hdr->check = checksum((uint16_t *)(ip_hdr), sizeof(struct iphdr));
-    ip_hdr->ttl = 255; // reinitializarea ttl-ului
+    // Set the TTL field to the max value
+    ip_hdr->ttl = 255;
 
-    // completarea header-ului icmp
+    // Write the ICMP header
     struct icmphdr *icmp_hdr = (struct icmphdr *)(buf + sizeof(struct ether_header) + sizeof(struct iphdr));
     memset(icmp_hdr, 0, sizeof(struct icmphdr));
-    icmp_hdr->type = type; // 11 pentru cazul Time exceeded sau 3 in cazul Destination unreachable
+
+    // Time exceeded: 11
+    // Destination unreachable: 3
+    icmp_hdr->type = type;
     icmp_hdr->checksum = checksum((uint16_t *)(icmp_hdr), sizeof(struct icmphdr));
     memcpy(icmp_hdr + sizeof(struct icmphdr), ip_hdr, sizeof(struct iphdr));
 
-    // reactualizare len
+    // Recalculate the packet length
     len = sizeof(struct ether_header) + 2 * sizeof(struct iphdr) + sizeof(struct icmphdr) + 64;
 
-    // noul buffer va contine, deasupra headerului ICMP, headerul de IPv4 al pachetului dropped,
-    // precum și primii 64 de biți din payload-ul pachetului original
+    // "Pentru ambele tipuri de mesaj de eroare, pachetul emis de router trebuie să conțină,
+    // deasupra headerului ICMP, headerul de IPv4 al pachetului dropped,
+    // precum și primii 64 de biți din payload-ul pachetului original."
     char *new_buf = (char *)malloc(len);
     memcpy(new_buf, eth_hdr, sizeof(struct ether_header));
     size_t offset = sizeof(struct ether_header);
@@ -234,8 +210,35 @@ void icmp_error(uint8_t type, char *buf, int interface, struct ether_header *eth
     memcpy(new_buf + offset, icmp_hdr, sizeof(struct icmphdr));
     offset += sizeof(struct icmphdr);
     memcpy(new_buf + offset, buf + sizeof(struct ether_header), sizeof(struct iphdr) + 64);
-    // trimiterea pachetului
+
+    // Send the ICMP error packet
     send_to_link(interface, new_buf, len);
+}
+
+// Send an ICMP message for the normal case: Echo reply
+void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
+                struct iphdr *ip_hdr, size_t len)
+{
+    get_interface_mac(interface, eth_hdr->ether_shost);
+    // Invert the source and destination in order to reply back
+    uint8_t aux[6];
+    memcpy(aux, eth_hdr->ether_dhost, sizeof(eth_hdr->ether_dhost));
+    memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
+    memcpy(eth_hdr->ether_shost, aux, sizeof(eth_hdr->ether_shost));
+
+    // Write the IP header
+    ip_hdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
+    ip_hdr->protocol = IPPROTO_ICMP;
+    ip_hdr->check = checksum((uint16_t *)(ip_hdr), sizeof(struct iphdr));
+
+    // Write the ICMP header
+    struct icmphdr *icmp_hdr = (struct icmphdr *)(buf +
+                                                  sizeof(struct ether_header) + sizeof(struct iphdr));
+    memset(icmp_hdr, 0, sizeof(struct icmphdr));
+    icmp_hdr->checksum = checksum((uint16_t *)(icmp_hdr), sizeof(struct icmphdr));
+
+    // Send the ICMP echo packet
+    send_to_link(interface, buf, len);
 }
 
 int main(int argc, char *argv[])
@@ -255,7 +258,10 @@ int main(int argc, char *argv[])
     DIE(arp_table == NULL, "Error when allocating arp table");
     arp_table_len = 0;
 
-    // Sorts the rtable by prefix and mask
+    // Sorts the rtable by prefix and then by mask in descending order
+    // This has a time complexity of O(n*log(n)), but is run only once, before the router receives packets.
+    // However, since the find_best_route function is run for every packet,
+    // this approach is more efficient than using a binary search.
     qsort(rtable, rtable_len, sizeof(struct route_table_entry), route_cmp);
 
     struct queue *q = queue_create();
@@ -340,7 +346,13 @@ int main(int argc, char *argv[])
         case 0x0608:
             struct arp_header *arp_hdr = (struct arp_header *)((void *)buf +
                                                                sizeof(struct ether_header));
-            if (arp_hdr->op == ntohs(ARPOP_REQUEST))
+            if (arp_hdr->op == ntohs(ARP_OP_REPLY))
+            {
+                // ARP Reply
+                arp_reply(arp_hdr, q);
+                continue;
+            }
+            if (arp_hdr->op == ntohs(ARP_OP_REQUEST))
             {
                 // ARP Request
                 // Set the mac addresses of the destination and source in the ethernet header
@@ -356,14 +368,8 @@ int main(int argc, char *argv[])
                 get_interface_mac(interface, arp_hdr->sha);
 
                 // Set the type to reply for the sent ARP packet
-                arp_hdr->op = htons(ARPOP_REPLY);
+                arp_hdr->op = htons(ARP_OP_REPLY);
                 send_to_link(interface, buf, len);
-                continue;
-            }
-            if (arp_hdr->op == ntohs(ARPOP_REPLY))
-            {
-                // ARP Reply
-                arp_reply(arp_hdr, q);
                 continue;
             }
             break;
