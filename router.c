@@ -44,19 +44,20 @@ int route_cmp(const void *ptr1, const void *ptr2)
     }
 }
 
-// Functia utilizeaza o cautare binara pentru a gasi in tabela de rutare ruta cea mai specifica
-// pentru adresa IP primita ca parametru
-struct route_table_entry *get_best_route(uint32_t dest_ip)
+// Using a binary search for the sorted routing table in order to select the best route for the given IP address
+struct route_table_entry *get_best_route(const uint32_t ip)
 {
-    int left = 0, right = rtable_len - 1, mid, pos = -1;
+    int left = 0;
+    int right = rtable_len - 1;
+    int pos = -1;
     uint32_t max_mask = 0;
 
-    // cat timp se mai poate cauta
     while (left <= right)
     {
-        mid = (left + right) / 2;
-        if ((dest_ip & rtable[mid].mask) == (rtable[mid].prefix & rtable[mid].mask))
+        int mid = (left + right) / 2;
+        if ((rtable[mid].prefix & rtable[mid].mask) == (ip & rtable[mid].mask))
         {
+            // If a better route was found, store its position in the routing table and its mask
             // daca s-a gasit o ruta satisfacatoare, se retine atat pozitia sa in tabela
             // de rutare, cat si masca acesteia
             if (ntohl(rtable[mid].mask) > max_mask)
@@ -64,20 +65,32 @@ struct route_table_entry *get_best_route(uint32_t dest_ip)
                 max_mask = ntohl(rtable[mid].mask);
                 pos = mid;
             }
-            right = mid - 1; // se cauta in stanga
+
+            // Search the left half in order to find better matches
+            right = mid - 1;
         }
-        else if (ntohl(dest_ip & rtable[mid].mask) >
+        else if (ntohl(ip & rtable[mid].mask) >
                  ntohl(rtable[mid].prefix & rtable[mid].mask))
         {
-            right = mid - 1; // se cauta in stanga
+            // Search the left half
+            right = mid - 1;
         }
         else
         {
-            left = mid + 1; // se cauta in dreapta
+            // Search the right half
+            left = mid + 1;
         }
     }
-    // daca s-a gasit o ruta, se intoarce pointer catre aceasta, sau NULL in caz contrar
-    return (pos >= 0) ? &rtable[pos] : NULL;
+
+    // If a route was found we return a pointer to the entry in the rtable for it
+    if (pos >= 0)
+    {
+        return &rtable[pos];
+    }
+    else
+    {
+        return NULL;
+    }
 }
 
 // Returns the entry in the ARP table that corresponds to the IP address of the next hop
@@ -96,7 +109,7 @@ struct arp_table_entry *find_arp_entry(const uint32_t ip)
 
 // Functia folosita in cazul router_arp_reply, care proceseaza elementele din coada de
 // asteptare si apoi le trimite pe interfata corespunzatoare
-void reply_arp(struct arp_header *arp_hdr, struct queue *q)
+void arp_reply(const struct arp_header *arp_hdr, struct queue *q)
 {
     // adaugarea in tabela mac a expeditorului ARP
     arp_table[arp_table_len].ip = arp_hdr->spa;
@@ -269,93 +282,89 @@ int main(int argc, char *argv[])
             ip_hdr->check = 0;
             if (old_check != htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr))))
             {
+                // The checksum is different, so the package was corrupted
                 memset(buf, 0, sizeof(buf));
                 continue;
             }
 
             // Find the best route for the destination IP of the packet
             struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
-            // No such route was found
+
+            // No route was found
             if (best_route == NULL)
             {
                 // Destination unreachable case, we need to send an ICMP packet to the source host
                 icmp_error(3, buf, interface, eth_hdr, ip_hdr, len);
                 continue;
             }
-            else
+            if (ip_hdr->ttl <= 1)
             {
-                if (ip_hdr->ttl <= 1)
-                {
-                    // Time exceeded case, we need to send an ICMP packet to the source host
-                    icmp_error(11, buf, interface, eth_hdr, ip_hdr, len);
-                    continue;
-                }
-                else
-                {
-                    // Echo reply case
-                    if (inet_addr(get_interface_ip(interface)) == ip_hdr->daddr)
-                    {
-                        echo_reply(buf, interface, eth_hdr, ip_hdr, len);
-                        continue;
-                    }
-                    else
-                    {
-                        uint16_t old_ttl = ip_hdr->ttl;
-                        // Decrement the TTL
-                        ip_hdr->ttl--;
-                        // Recalculate the checksum
-                        ip_hdr->check = ~(~old_check + ~((uint16_t)old_ttl) + (uint16_t)ip_hdr->ttl) - 1;
-
-                        struct arp_table_entry *next_hop_mac = find_arp_entry(best_route->next_hop);
-                        // There is no next hop in the ARP table
-                        if (next_hop_mac == NULL)
-                        {
-                            // copierea in coada a vechiului buf
-                            char *new_buf = malloc(sizeof(buf));
-                            memcpy(new_buf, buf, sizeof(buf));
-                            queue_enq(q, new_buf);
-                            // folosirea functiei specifice
-                            no_next_hop(buf, best_route);
-                            continue;
-                        }
-                        else
-                        {
-                            // We send the IP packet
-                            memcpy(eth_hdr->ether_dhost, next_hop_mac->mac,
-                                   sizeof(eth_hdr->ether_dhost));
-                            get_interface_mac(best_route->interface, eth_hdr->ether_shost);
-                            send_to_link(best_route->interface, buf, len);
-                        }
-                    }
-                }
+                // Time exceeded case, we need to send an ICMP packet to the source host
+                icmp_error(11, buf, interface, eth_hdr, ip_hdr, len);
+                continue;
             }
+            if (inet_addr(get_interface_ip(interface)) == ip_hdr->daddr)
+            {
+                // Echo reply case
+                echo_reply(buf, interface, eth_hdr, ip_hdr, len);
+                continue;
+            }
+
+            uint16_t old_ttl = ip_hdr->ttl;
+            // Decrement the TTL
+            ip_hdr->ttl--;
+            // Recalculate the checksum
+            ip_hdr->check = ~(~old_check + ~((uint16_t)old_ttl) + (uint16_t)ip_hdr->ttl) - 1;
+
+            struct arp_table_entry *next_hop_mac = find_arp_entry(best_route->next_hop);
+            // There is no next hop in the ARP table
+            if (next_hop_mac == NULL)
+            {
+                // Put the old buffer in the queue
+                char *new_buf = malloc(sizeof(buf));
+                memcpy(new_buf, buf, sizeof(buf));
+                queue_enq(q, new_buf);
+
+                no_next_hop(buf, best_route);
+                continue;
+            }
+
+            // We send the IP packet
+            memcpy(eth_hdr->ether_dhost, next_hop_mac->mac,
+                   sizeof(eth_hdr->ether_dhost));
+            get_interface_mac(best_route->interface, eth_hdr->ether_shost);
+            send_to_link(best_route->interface, buf, len);
+
             break;
 
         // This is an ARP packet
         case 0x0608:
-            // crearea structurii de tip struct arp_header*
             struct arp_header *arp_hdr = (struct arp_header *)((void *)buf +
                                                                sizeof(struct ether_header));
             if (arp_hdr->op == ntohs(ARPOP_REQUEST))
-            { // request
+            {
+                // ARP Request
+                // Set the mac addresses of the destination and source in the ethernet header
                 memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, MAC_SIZE);
                 get_interface_mac(interface, eth_hdr->ether_shost);
 
                 memcpy(arp_hdr->tha, arp_hdr->sha, MAC_SIZE);
 
+                // Set the target and host IP adresses for the next ARP packet
                 arp_hdr->tpa = arp_hdr->spa;
                 arp_hdr->spa = inet_addr(get_interface_ip(interface));
 
                 get_interface_mac(interface, arp_hdr->sha);
-                // setare tip reply
-                arp_hdr->op = htons(ARPOP_REPLY);
 
+                // Set the type to reply for the sent ARP packet
+                arp_hdr->op = htons(ARPOP_REPLY);
                 send_to_link(interface, buf, len);
                 continue;
             }
-            else if (arp_hdr->op == ntohs(ARPOP_REPLY))
-            { // reply
-                reply_arp(arp_hdr, q);
+            if (arp_hdr->op == ntohs(ARPOP_REPLY))
+            {
+                // ARP Reply
+                arp_reply(arp_hdr, q);
                 continue;
             }
             break;
