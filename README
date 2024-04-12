@@ -1,0 +1,63 @@
+## PCom - Tema 1: Dataplane router
+
+---
+
+*MENTIUNE: IMPLEMENTAREA TEMEI DERIVA DIN IMPLEMENTAREA LABORATORULUI 4*
+
+*Cerinte rezolvate: Procesul de dirijare, Longest Prefix Match eficient (folosind cautare binara pe tabela de rutare sortata), Protocolul ARP, Protocolul ICMP.*
+
+Descrierea functiilor folosite in router.c:
+
+- int route_cmp(const void *ptr1, const void*ptr2):
+    Functie apelata de qsort pentru a sorta intrarile din rtable in ordine descrescatoare a prefixelor. Intrarile cu acelasi prefix sunt sortate descrescator in functie de lungimea mastii.
+
+- struct route_table_entry *find_best_route(const uint32_t ip):
+    O implementare a algoritmului Longest Prefix Match pe o tabela de rutare sortata folosind binary sort. Mai multe intrari se pot potrivi, in cazul asta retin masca de lungime maxima pana acum si incerc sa gasesc una cu o lungime mai mare a mastii in partea stanga a intervalului curent. Deci intrarea gasita va avea IP-ul egal cu cel cautat si masca de lungime maxima.
+
+- struct arp_table_entry *find_arp_entry(const uint32_t ip):
+    Fac o cautare liniara in tabela ARP pentru a gasi adresa MAC corespunzatoare unei adrese IP, daca exista.
+
+- void arp_reply(const struct arp_header *arp_hdr, struct queue*q):
+    Folosesc coada de pachete ARP pentru a retine o adresa MAC primita printr-un pachet ARP.
+
+- void no_next_hop(char *buf, struct route_table_entry*best_route):
+    Nu am gasit adresa MAC a urmatorului hop, voi scrie campurile ethernet si arp in buf si trimit un pachet nou prin broadcast ca sa gasesc adresa MAC.
+
+- void icmp_error(uint8_t type, char *buf, int interface, struct ether_header*eth_hdr,
+                struct iphdr *ip_hdr, size_t len):
+    Scriu headerele pentru IP, ICMP si trimit un pachet ICMP pe interfata data pentru cazurile Time exceeded sau Destination unreachable.
+
+- void echo_reply(char *buf, int interface, struct ether_header*eth_hdr,
+                struct iphdr *ip_hdr, size_t len):
+    Scriu headerele pentru IP, ICMP si trimit un pachet ICMP catre routerul/hostul sursa pentru pachetul curent, pentru cazul Echo reply.
+
+- int main(int argc, char *argv[]):
+    Voi retine urmatorul pachet in buf.
+
+    Aloc memorie pentru tabela de rutare, tabela ARP, si initializez coada pe care voi primi ARP reply-uri.
+
+    Sortez tabela de rutare folosind qsort si comparatorul descris mai sus. De fiecare apel al functiei find_best_route va avea deci o complexitate de O(log(n)), voi putea sa gasesc ruta optima mai eficient decat printr-o simpla cautare liniara.
+
+    Primesc un pachet pe o anumita interfata folosind recv_from_any_link, si retin headerele IP si Ethernet pentru el. Tratez 2 tipuri de protocoale continute in ether_type: IPV4 sau ARP, restul pachetelor sunt aruncate.
+
+    1) Pachet IP:
+
+    Verific checksum, daca pachetul e corupt il arunc.
+
+    Apelez find_best_route, daca e NULL, apelez icmp_error pentru cazul Destination unreachable si arunc pachetul.
+
+    Daca TTL e <= 1, apelez icmp_error pentru cazul Time exceeded si arunc pachetul.
+
+    Daca pachetul este destinat routerului insusi, apelez echo_reply ca sa trimit un mesaj ICMP pe interfata pe care am primit pachetul asta.
+
+    Decrementez TTL si recalculez chechsum.
+
+    Apelez find_arp_entry pentru urmatoarea adresa IP. Daca nu gasesc o adresa MAC, adaug pachetul curent in coada, apelez no_next_hop si arunc pachetul.
+
+    Daca nu s-a ajuns in niciunul din aceste cazuri, setez adresele MAC destinatie si sursa pentru packet si il trimit pe interfata aferenta lui best_route.
+
+    2) Pachet ARP:
+
+    Castez buf la un struct arp_header. Daca operatia este de tipul reply, am primit un pachet ARP cu o adresa MAC dorita. Voi apela arp_reply.
+
+    Daca operatia e request, trimit un raspuns cu adresa mea MAC.

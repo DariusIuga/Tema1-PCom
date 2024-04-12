@@ -8,17 +8,18 @@
 #include "protocols.h"
 #include "queue.h"
 
-#define ETHERTYPE_IP 0x0800
-#define ETHERTYPE_ARP 0x0806
-#define ARP_OP_REQUEST 0x0001
-#define ARP_OP_REPLY 0x0002
-#define MAC_SIZE 6
+const uint16_t ETHERTYPE_IP = 0x0800;
+const uint16_t ETHERTYPE_ARP = 0x0806;
+const uint16_t ARP_OP_REQUEST = 0x0001;
+const uint16_t ARP_OP_REPLY = 0x0002;
+const int MAC_SIZE = 6;
 
 /* Routing table */
-struct route_table_entry *rtable;
+struct route_table_entry *
+    rtable;
 int rtable_len;
 
-/* ARP table */
+/* Mac table */
 struct arp_table_entry *arp_table;
 int arp_table_len;
 
