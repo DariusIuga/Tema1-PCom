@@ -8,15 +8,6 @@
 
 #define MAX_PACKET_LEN 1600
 #define ROUTER_NUM_INTERFACES 3
-#define ICMP_TIME_EXCEEDED 11
-#define ICMP_DESTINATION_UNREACHABLE 3
-#define ETHERTYPE_IP 0x0800
-#define ETHERTYPE_ARP 0x0806
-#define ETH_ARP_LEN 6 // 6 * sizeof(uint8_t)
-#define MAX_LINE_LENGTH 256
-#define MAX_IP_LENGTH 16
-#define ARPOP_REQUEST 0x0001
-#define ARPOP_REPLY 0x0002
 
 /*
  * @brief Sends a packet on a specific interface.

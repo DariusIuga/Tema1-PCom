@@ -9,13 +9,23 @@
 #include "protocols.h"
 #include "queue.h"
 
+#define ICMP_TIME_EXCEEDED 11
+#define ICMP_DESTINATION_UNREACHABLE 3
+#define ETHERTYPE_IP 0x0800
+#define ETHERTYPE_ARP 0x0806
+#define ETH_ARP_LEN 6 // 6 * sizeof(uint8_t)
+#define MAX_LINE_LENGTH 256
+#define MAX_IP_LENGTH 16
+#define ARPOP_REQUEST 0x0001
+#define ARPOP_REPLY 0x0002
+
 /* Routing table */
 struct route_table_entry *rtable;
 int rtable_len;
 
 /* Mac table */
-struct arp_table_entry *mac_table;
-int mac_table_len;
+struct arp_table_entry *arp_table;
+int arp_table_len;
 
 // Cazul Echo reply
 void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
@@ -45,8 +55,8 @@ void echo_reply(char *buf, int interface, struct ether_header *eth_hdr,
 }
 
 // Cazul Time exceeded and case Destination unreachable
-void icmp_err(uint8_t type, char *buf, int interface, struct ether_header *eth_hdr,
-              struct iphdr *ip_hdr, size_t len)
+void icmp_error(uint8_t type, char *buf, int interface, struct ether_header *eth_hdr,
+                struct iphdr *ip_hdr, size_t len)
 {
     // reinitializarea interfetei
     get_interface_mac(interface, eth_hdr->ether_shost);
@@ -85,18 +95,19 @@ void icmp_err(uint8_t type, char *buf, int interface, struct ether_header *eth_h
 // in tabela dupa prefix si masca
 int cmp(const void *p1, const void *p2)
 {
-    const struct route_table_entry *a_route = (const struct route_table_entry *)p1;
-    const struct route_table_entry *b_route = (const struct route_table_entry *)p2;
+    const struct route_table_entry *first_entry = (const struct route_table_entry *)p1;
+    const struct route_table_entry *second_entry = (const struct route_table_entry *)p2;
 
-    // ordonare dupa masca
-    if ((b_route->prefix & b_route->mask) == (a_route->prefix & a_route->mask))
+    if ((first_entry->prefix & first_entry->mask) != (second_entry->prefix & second_entry->mask))
     {
-        return ntohl(b_route->mask) > ntohl(a_route->mask);
+        // ordonare dupa prefix
+        return ntohl(second_entry->prefix & second_entry->mask) >
+               ntohl(first_entry->prefix & first_entry->mask);
     }
     else
-    { // ordonare dupa prefix
-        return ntohl(b_route->prefix & b_route->mask) >
-               ntohl(a_route->prefix & a_route->mask);
+    {
+        // ordonare dupa masca
+        return ntohl(first_entry->mask) < ntohl(second_entry->mask);
     }
 }
 
@@ -136,15 +147,17 @@ struct route_table_entry *get_best_route(uint32_t dest_ip)
     return (pos >= 0) ? &rtable[pos] : NULL;
 }
 
-// Functia returneaza intrarea corespunzatoare adresei IP a urmatorului hop din tabela ARP
-struct arp_table_entry *get_arp_entry(uint32_t ip)
+// Returns the entry in the ARP table that corresponds to the IP address of the next hop
+struct arp_table_entry *find_arp_entry(const uint32_t ip)
 {
-    for (int i = 0; i < mac_table_len; i++)
+    for (int i = 0; i < arp_table_len; i++)
     {
-        if ((mac_table + i)->ip == ip)
-            return (mac_table + i);
+        if (arp_table[i].ip == ip)
+        {
+            return &arp_table[i];
+        }
     }
-    // daca nu s-a gasit intrarea corespunzatoare, se intoarce NULL
+    // NO entry for the given IP was found
     return NULL;
 }
 
@@ -153,9 +166,9 @@ struct arp_table_entry *get_arp_entry(uint32_t ip)
 void reply_arp(struct arp_header *arp_hdr, struct queue *q)
 {
     // adaugarea in tabela mac a expeditorului ARP
-    mac_table[mac_table_len].ip = arp_hdr->spa;
-    memcpy(mac_table[mac_table_len].mac, arp_hdr->sha, ETH_ARP_LEN);
-    mac_table_len++; // reactualizarea dimensiunii tabelei
+    arp_table[arp_table_len].ip = arp_hdr->spa;
+    memcpy(arp_table[arp_table_len].mac, arp_hdr->sha, ETH_ARP_LEN);
+    arp_table_len++; // reactualizarea dimensiunii tabelei
 
     // parcurgerea cozii de buffere
     while (queue_empty(q) == 0)
@@ -223,20 +236,21 @@ int main(int argc, char *argv[])
     // Do not modify this line
     init(argc - 2, argv + 2);
 
-    /* Code to allocate the MAC and route tables */
+    // Read routing table
     rtable = malloc(sizeof(struct route_table_entry) * 100000);
-    DIE(rtable == NULL, "memory");
+    DIE(rtable == NULL, "Error when allocating routing table");
     rtable_len = read_rtable(argv[1], rtable);
+
+    // Read arp table
+    arp_table = malloc(sizeof(struct arp_table_entry) * 10);
+    DIE(arp_table == NULL, "Error when allocating arp table");
+    arp_table_len = 0;
 
     // ordonarea tabelei de rutare dupa prefix si masca
     qsort(rtable, rtable_len, sizeof(struct route_table_entry), cmp);
 
-    mac_table = malloc(sizeof(struct route_table_entry) * 100000);
-    DIE(mac_table == NULL, "memory");
-    mac_table_len = 0;
-
     struct queue *q = queue_create();
-    DIE(q == NULL, "error");
+    DIE(q == NULL, "Error when creating queue");
 
     while (1)
     {
@@ -266,7 +280,7 @@ int main(int argc, char *argv[])
             if (best_router == NULL)
             {
                 // cazul Destination unreachable
-                icmp_err(ICMP_DESTINATION_UNREACHABLE, buf, interface, eth_hdr, ip_hdr, len);
+                icmp_error(ICMP_DESTINATION_UNREACHABLE, buf, interface, eth_hdr, ip_hdr, len);
                 continue;
             }
             else
@@ -274,7 +288,7 @@ int main(int argc, char *argv[])
                 if (ip_hdr->ttl <= 1)
                 {
                     // cazul Time exceeded
-                    icmp_err(ICMP_TIME_EXCEEDED, buf, interface, eth_hdr, ip_hdr, len);
+                    icmp_error(ICMP_TIME_EXCEEDED, buf, interface, eth_hdr, ip_hdr, len);
                     continue;
                 }
                 else
@@ -292,7 +306,7 @@ int main(int argc, char *argv[])
                         // refacerea checksum-ului
                         ip_hdr->check = ~(~old_check + ~((uint16_t)old_ttl) + (uint16_t)ip_hdr->ttl) - 1;
 
-                        struct arp_table_entry *nexthop_mac = get_arp_entry(best_router->next_hop);
+                        struct arp_table_entry *nexthop_mac = find_arp_entry(best_router->next_hop);
                         // cazul in care nu exista urmatorul hop in tabela ARP
                         if (nexthop_mac == NULL)
                         {
